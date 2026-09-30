@@ -1,15 +1,20 @@
 /*
-   ESP32 Robot Access Point + Web Interface + mDNS (control.local)
-   التحكم بروبوت عبر شبكة Wi-Fi خاصة ولوحة تحكم HTML/JS مباشرة
+   ESP32 Robot Access Point + Captive Portal + mDNS
+   لوحة تحكم تفتح تلقائياً فور الاتصال بشبكة الـ Wi-Fi
 */
 
 #include <WiFi.h>
 #include <WebServer.h>
+#include <DNSServer.h>
 #include <ESPmDNS.h>
 
-// إعدادات نقطة الوصول (Access Point)
+// إعدادات شبكة الـ Wi-Fi الخاصة بالروبوت
 const char* ssid = "ESP32-Robot";
 const char* password = "12345678";
+
+// منفذ DNS المعتاد
+const byte DNS_PORT = 53;
+DNSServer dnsServer;
 
 // إنشاء خادم الويب على المنفذ 80
 WebServer server(80);
@@ -47,19 +52,23 @@ void moveMotors(int leftSpeed, int rightSpeed) {
   }
 }
 
-// تصميم لوحة التحكم (HTML + CSS + JavaScript)
+// تصميم لوحة التحكم الاحترافية (HTML + CSS + JS)
 const char HTML_CONTENT[] PROGMEM = R"rawliteral(
 <!DOCTYPE html>
 <html lang="ar" dir="rtl">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
     <title>لوحة تحكم الروبوت</title>
     <style>
+        * {
+            box-sizing: border-box;
+            touch-action: manipulation;
+        }
         body {
-            font-family: Arial, sans-serif;
-            background-color: #1e1e2f;
-            color: white;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #121212;
+            color: #ffffff;
             text-align: center;
             margin: 0;
             padding: 20px;
@@ -67,42 +76,68 @@ const char HTML_CONTENT[] PROGMEM = R"rawliteral(
             flex-direction: column;
             align-items: center;
             justify-content: center;
-            height: 90vh;
+            height: 100vh;
+            user-select: none;
+            -webkit-user-select: none;
+            overflow: hidden;
         }
-        h1 { margin-bottom: 30px; font-size: 24px; }
+        h1 {
+            font-size: 22px;
+            margin-bottom: 25px;
+            color: #00adb5;
+            text-shadow: 0 0 10px rgba(0, 173, 181, 0.3);
+        }
         .grid-container {
             display: grid;
-            grid-template-columns: repeat(3, 80px);
+            grid-template-columns: repeat(3, 85px);
             grid-gap: 15px;
             justify-content: center;
         }
         .btn {
-            width: 80px;
-            height: 80px;
-            background-color: #2e3047;
-            border: 2px solid #3b3e5e;
-            border-radius: 12px;
-            color: white;
-            font-size: 24px;
+            width: 85px;
+            height: 85px;
+            background: #1f1f1f;
+            border: 2px solid #333;
+            border-radius: 16px;
+            color: #ffffff;
+            font-size: 28px;
             font-weight: bold;
             cursor: pointer;
-            user-select: none;
-            -webkit-user-select: none;
-            touch-action: manipulation;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
-            transition: background 0.1s;
+            box-shadow: 0 6px 12px rgba(0,0,0,0.5);
+            transition: all 0.1s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
         }
-        .btn:active { background-color: #00adb5; }
+        .btn:active {
+            background-color: #00adb5;
+            border-color: #00adb5;
+            transform: scale(0.95);
+            box-shadow: 0 2px 5px rgba(0, 173, 181, 0.4);
+        }
         .up { grid-column: 2; grid-row: 1; }
         .left { grid-column: 1; grid-row: 2; }
-        .stop { grid-column: 2; grid-row: 2; background-color: #ff2e63; }
+        .stop { 
+            grid-column: 2; 
+            grid-row: 2; 
+            background-color: #e63946; 
+            border-color: #e63946;
+        }
+        .stop:active {
+            background-color: #ff4d5a;
+        }
         .right { grid-column: 3; grid-row: 2; }
         .down { grid-column: 2; grid-row: 3; }
+        .footer {
+            margin-top: 30px;
+            font-size: 12px;
+            color: #666;
+        }
     </style>
 </head>
 <body>
 
-    <h1>التحكم بالروبوت</h1>
+    <h1>🤖 لوحة تحكم الروبوت</h1>
 
     <div class="grid-container">
         <button class="btn up" onmousedown="sendCmd('up')" onmouseup="sendCmd('stop')" ontouchstart="sendCmd('up'); event.preventDefault();" ontouchend="sendCmd('stop')">▲</button>
@@ -111,6 +146,8 @@ const char HTML_CONTENT[] PROGMEM = R"rawliteral(
         <button class="btn right" onmousedown="sendCmd('right')" onmouseup="sendCmd('stop')" ontouchstart="sendCmd('right'); event.preventDefault();" ontouchend="sendCmd('stop')">▶</button>
         <button class="btn down" onmousedown="sendCmd('down')" onmouseup="sendCmd('stop')" ontouchstart="sendCmd('down'); event.preventDefault();" ontouchend="sendCmd('stop')">▼</button>
     </div>
+
+    <div class="footer">متصل بالروبوت مباشرة</div>
 
     <script>
         function sendCmd(cmd) {
@@ -151,28 +188,40 @@ void setup() {
   pinMode(IN4, OUTPUT);
   moveMotors(0, 0);
 
-  // بدء شبكة Wi-Fi الخاصة بالـ ESP32
+  // 1. تشغيل شبكة الـ Wi-Fi
+  WiFi.mode(WIFI_AP);
   WiFi.softAP(ssid, password);
-  Serial.println("تم إنشاء شبكة Wi-Fi:");
-  Serial.print("SSID: "); Serial.println(ssid);
-  Serial.print("IP Address: "); Serial.println(WiFi.softAPIP());
+  delay(100);
 
-  // إعداد mDNS للتصفح عبر الاسم control.local
+  IPAddress apIP = WiFi.softAPIP();
+  Serial.print("عنوان IP الشبكة: ");
+  Serial.println(apIP);
+
+  // 2. تشغيل الـ Captive Portal لتوجيه كل الطلبات إلى IP الـ ESP32
+  dnsServer.start(DNS_PORT, "*", apIP);
+
+  // 3. إعداد mDNS للتصفح عبر الاسم control.local
   if (MDNS.begin("control")) {
-    Serial.println("تم تفعيل الرابط: http://control.local");
-  } else {
-    Serial.println("خطأ في إعداد mDNS!");
+    Serial.println("mDNS شغال: http://control.local");
   }
 
-  // ربط المسارات بالدوال الخاصه بها
+  // 4. ضبط مسارات خادم الويب
   server.on("/", handleRoot);
   server.on("/control", handleControl);
 
-  // بدء خادم الويب
+  // توجيه أي رابط خاطئ أو طلب تلقائي من الأنظمة (مثل Android/iOS) للـ Root
+  server.onNotFound([]() {
+    server.send(200, "text/html", HTML_CONTENT);
+  });
+
   server.begin();
-  Serial.println("خادم الويب قيد التشغيل...");
+  Serial.println("الخادم جاهز!");
 }
 
 void loop() {
+  // استقبال طلبات الـ DNS لتفعيل الـ Captive Portal
+  dnsServer.processNextRequest();
+  
+  // استقبال طلبات خادم الويب
   server.handleClient();
 }
