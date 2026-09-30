@@ -1,0 +1,178 @@
+/*
+   ESP32 Robot Access Point + Web Interface + mDNS (control.local)
+   التحكم بروبوت عبر شبكة Wi-Fi خاصة ولوحة تحكم HTML/JS مباشرة
+*/
+
+#include <WiFi.h>
+#include <WebServer.h>
+#include <ESPmDNS.h>
+
+// إعدادات نقطة الوصول (Access Point)
+const char* ssid = "ESP32-Robot";
+const char* password = "12345678";
+
+// إنشاء خادم الويب على المنفذ 80
+WebServer server(80);
+
+// تعريف دبابيس توصيل المحركات
+#define IN1 12  // المحرك الأيسر
+#define IN2 14  // المحرك الأيسر
+#define IN3 27  // المحرك الأيمن
+#define IN4 26  // المحرك الأيمن
+
+// دالة توجيه المحركات
+void moveMotors(int leftSpeed, int rightSpeed) {
+  // التحكم بالمحرك الأيسر
+  if (leftSpeed > 0) {
+    digitalWrite(IN1, HIGH);
+    digitalWrite(IN2, LOW);
+  } else if (leftSpeed < 0) {
+    digitalWrite(IN1, LOW);
+    digitalWrite(IN2, HIGH);
+  } else {
+    digitalWrite(IN1, LOW);
+    digitalWrite(IN2, LOW);
+  }
+
+  // التحكم بالمحرك الأيمن
+  if (rightSpeed > 0) {
+    digitalWrite(IN3, HIGH);
+    digitalWrite(IN4, LOW);
+  } else if (rightSpeed < 0) {
+    digitalWrite(IN3, LOW);
+    digitalWrite(IN4, HIGH);
+  } else {
+    digitalWrite(IN3, LOW);
+    digitalWrite(IN4, LOW);
+  }
+}
+
+// تصميم لوحة التحكم (HTML + CSS + JavaScript)
+const char HTML_CONTENT[] PROGMEM = R"rawliteral(
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>لوحة تحكم الروبوت</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #1e1e2f;
+            color: white;
+            text-align: center;
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 90vh;
+        }
+        h1 { margin-bottom: 30px; font-size: 24px; }
+        .grid-container {
+            display: grid;
+            grid-template-columns: repeat(3, 80px);
+            grid-gap: 15px;
+            justify-content: center;
+        }
+        .btn {
+            width: 80px;
+            height: 80px;
+            background-color: #2e3047;
+            border: 2px solid #3b3e5e;
+            border-radius: 12px;
+            color: white;
+            font-size: 24px;
+            font-weight: bold;
+            cursor: pointer;
+            user-select: none;
+            -webkit-user-select: none;
+            touch-action: manipulation;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+            transition: background 0.1s;
+        }
+        .btn:active { background-color: #00adb5; }
+        .up { grid-column: 2; grid-row: 1; }
+        .left { grid-column: 1; grid-row: 2; }
+        .stop { grid-column: 2; grid-row: 2; background-color: #ff2e63; }
+        .right { grid-column: 3; grid-row: 2; }
+        .down { grid-column: 2; grid-row: 3; }
+    </style>
+</head>
+<body>
+
+    <h1>التحكم بالروبوت</h1>
+
+    <div class="grid-container">
+        <button class="btn up" onmousedown="sendCmd('up')" onmouseup="sendCmd('stop')" ontouchstart="sendCmd('up'); event.preventDefault();" ontouchend="sendCmd('stop')">▲</button>
+        <button class="btn left" onmousedown="sendCmd('left')" onmouseup="sendCmd('stop')" ontouchstart="sendCmd('left'); event.preventDefault();" ontouchend="sendCmd('stop')">◀</button>
+        <button class="btn stop" onclick="sendCmd('stop')">■</button>
+        <button class="btn right" onmousedown="sendCmd('right')" onmouseup="sendCmd('stop')" ontouchstart="sendCmd('right'); event.preventDefault();" ontouchend="sendCmd('stop')">▶</button>
+        <button class="btn down" onmousedown="sendCmd('down')" onmouseup="sendCmd('stop')" ontouchstart="sendCmd('down'); event.preventDefault();" ontouchend="sendCmd('stop')">▼</button>
+    </div>
+
+    <script>
+        function sendCmd(cmd) {
+            fetch('/control?cmd=' + cmd)
+                .catch(err => console.error('Error:', err));
+        }
+    </script>
+</body>
+</html>
+)rawliteral";
+
+// معالجة فتح الصفحة الرئيسية
+void handleRoot() {
+  server.send(200, "text/html", HTML_CONTENT);
+}
+
+// معالجة أوامر الحركة
+void handleControl() {
+  if (server.hasArg("cmd")) {
+    String cmd = server.arg("cmd");
+    
+    if (cmd == "up") moveMotors(1, 1);
+    else if (cmd == "down") moveMotors(-1, -1);
+    else if (cmd == "left") moveMotors(-1, 1);
+    else if (cmd == "right") moveMotors(1, -1);
+    else moveMotors(0, 0); // stop
+  }
+  server.send(200, "text/plain", "OK");
+}
+
+void setup() {
+  Serial.begin(115200);
+
+  // إعداد دبابيس المحركات كمخرجات
+  pinMode(IN1, OUTPUT);
+  pinMode(IN2, OUTPUT);
+  pinMode(IN3, OUTPUT);
+  pinMode(IN4, OUTPUT);
+  moveMotors(0, 0);
+
+  // بدء شبكة Wi-Fi الخاصة بالـ ESP32
+  WiFi.softAP(ssid, password);
+  Serial.println("تم إنشاء شبكة Wi-Fi:");
+  Serial.print("SSID: "); Serial.println(ssid);
+  Serial.print("IP Address: "); Serial.println(WiFi.softAPIP());
+
+  // إعداد mDNS للتصفح عبر الاسم control.local
+  if (MDNS.begin("control")) {
+    Serial.println("تم تفعيل الرابط: http://control.local");
+  } else {
+    Serial.println("خطأ في إعداد mDNS!");
+  }
+
+  // ربط المسارات بالدوال الخاصه بها
+  server.on("/", handleRoot);
+  server.on("/control", handleControl);
+
+  // بدء خادم الويب
+  server.begin();
+  Serial.println("خادم الويب قيد التشغيل...");
+}
+
+void loop() {
+  server.handleClient();
+}
